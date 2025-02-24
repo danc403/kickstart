@@ -22,8 +22,8 @@ def get_instructions(ip,port):
 Boot from the Rocky Linux 9 minimal ISO image.<br>
 At the boot prompt, press Tab to edit the boot options.<br>
 Modify the boot command by adding inst.ks=http://your_web_server/ks.cfg to the end.<br>
-For example, if your web server's address is {ip}:{port} and your kickstart file is named ks.cfg, the boot command would look like this:<br>
-<code>vmlinuz inst.repo=http://download.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/ inst.ks=http://{ip}:{port}/ks.cfg quiet</code>
+For example, if your web server's address is {ip}:{port} and your kickstart file is named rocky9.idfly.cfg, the boot command would look like this:<br>
+<code>vmlinuz inst.ks=http://{ip}:{port}/rocky9.idfly.cfg quiet</code>
 <br>
 Press Enter to start the installation.<br>     
     """
