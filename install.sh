@@ -75,8 +75,8 @@ echo "Identifying the primary network interface with a DHCP address (Rocky 9 spe
 LIVE_INTERFACE=$(nmcli c show --active | grep "IP4.ADDRESS" | awk '{print $4}' | sed 's/\..*//')
 
 if [ -z "${LIVE_INTERFACE}" ]; then
-  echo "Error: Could not automatically determine the active network interface with a DHCP address. Please check your network configuration in the live environment."
-  exit 1
+    echo "Error: Could not automatically determine the active network interface with a DHCP address. Please check your network configuration in the live environment."
+    exit 1
 fi
 
 echo "Detected live environment interface with DHCP: ${LIVE_INTERFACE}"
@@ -84,45 +84,66 @@ INTERFACE_NAME="${LIVE_INTERFACE}" # Use the detected interface for configuratio
 
 echo "Chrooting into ${TARGET_MOUNT_POINT}"
 sudo chroot "${TARGET_MOUNT_POINT}" /bin/bash -c "
-  set -e
+    set -e
 
-  # Enable standard Rocky Linux repositories (explicitly, though often default)
-  echo 'Enabling standard Rocky Linux repositories...'
-  dnf config-manager --set-enabled baseos
-  dnf config-manager --set-enabled appstream
+    # Enable standard Rocky Linux repositories (explicitly, though often default)
+    echo 'Enabling standard Rocky Linux repositories...'
+    dnf config-manager --set-enabled baseos
+    dnf config-manager --set-enabled appstream
 
-  # Enable CRB and EPEL repositories
-  echo 'Enabling CRB and EPEL repositories...'
-  dnf config-manager --set-enabled crb
-  dnf install -y epel-release
+    # Enable CRB and EPEL repositories
+    echo 'Enabling CRB and EPEL repositories...'
+    dnf config-manager --set-enabled crb
+    dnf install -y epel-release
 
-  # Configure Repositories (assuming default Rocky repos are OK in the live env for initial install)
-  echo 'Configuring repositories (if needed)...'
-  # You might add more specific repository configurations here if required
+    # Configure Repositories (assuming default Rocky repos are OK in the live env for initial install)
+    echo 'Configuring repositories (if needed)...'
+    # You might add more specific repository configurations here if required
 
-  # Install base system, kernel, server utils, cockpit, podman, qemu-kvm
-  echo 'Installing base system, kernel, server tools, cockpit, podman, qemu-kvm...'
-  dnf -y install @base kernel cockpit podman qemu-kvm libvirt libvirt-daemon-kvm sudo
+    # Install base system, kernel, server tools, utilities, and dkms
+    echo 'Installing base system, kernel, server tools, utilities, and dkms...'
+    dnf -y install @base kernel cockpit podman qemu-kvm libvirt libvirt-daemon-kvm sudo net-tools nano yum-utils tmux dkms
 
-  # Add user
-  echo 'Adding user: ${USERNAME}'
-  useradd -m -s /bin/bash ${USERNAME}
+    # Configure timezone
+    echo 'Setting timezone to America/Chicago...'
+    ln -sf /usr/share/zoneinfo/America/Chicago /etc/localtime
+    echo 'America/Chicago' > /etc/timezone
+    timedatectl set-timezone America/Chicago # More modern way
 
-  # Set user password
-  echo 'Setting password for user: ${USERNAME}'
-  echo '${USERNAME}:${USER_PASSWORD}' | chpasswd
+    # Configure locale
+    echo 'Setting locale to en_US.UTF-8...'
+    localectl set-locale LANG=en_US.UTF-8
 
-  # Set root password
-  echo 'Setting root password...'
-  echo 'root:${ROOT_PASSWORD}' | chpasswd
+    # Install and enable firewall
+    echo 'Installing and enabling firewall...'
+    dnf -y install firewalld
+    systemctl enable firewalld
+    systemctl start firewalld
 
-  # Grant administrator privileges (add to wheel group)
-  echo 'Adding user to wheel group for sudo access'
-  usermod -aG wheel ${USERNAME}
+    # Open SSH port in the firewall
+    echo 'Opening SSH port in the firewall...'
+    firewall-cmd --permanent --add-service=ssh
+    firewall-cmd --reload
 
-  # Configure NetworkManager for static IP
-  echo 'Configuring static network...'
-  cat > /etc/NetworkManager/system-connections/static-${INTERFACE_NAME}.nmconnection <<EOL
+    # Add user
+    echo 'Adding user: ${USERNAME}'
+    useradd -m -s /bin/bash ${USERNAME}
+
+    # Set user password
+    echo 'Setting password for user: ${USERNAME}'
+    echo '${USERNAME}:${USER_PASSWORD}' | chpasswd
+
+    # Set root password
+    echo 'Setting root password...'
+    echo 'root:${ROOT_PASSWORD}' | chpasswd
+
+    # Grant administrator privileges (add to wheel group)
+    echo 'Adding user to wheel group for sudo access'
+    usermod -aG wheel ${USERNAME}
+
+    # Configure NetworkManager for static IP
+    echo 'Configuring static network...'
+    cat > /etc/NetworkManager/system-connections/static-${INTERFACE_NAME}.nmconnection <<EOL
 [connection]
 id=static-${INTERFACE_NAME}
 type=ethernet
@@ -138,29 +159,31 @@ dns=${DNS}
 [ipv6]
 method=auto
 EOL
-  chmod 600 /etc/NetworkManager/system-connections/static-${INTERFACE_NAME}.nmconnection
+    chmod 600 /etc/NetworkManager/system-connections/static-${INTERFACE_NAME}.nmconnection
 
-  # Set hostname
-  echo '${HOSTNAME}' > /etc/hostname
-  hostname '${HOSTNAME}'
+    # Set hostname
+    echo '${HOSTNAME}' > /etc/hostname
+    hostname '${HOSTNAME}'
 
-  # Enable and start services
-  echo 'Enabling and starting services...'
-  systemctl enable NetworkManager.service
-  systemctl enable cockpit.socket
-  systemctl enable libvirtd.service
-  systemctl enable podman.socket
-  systemctl start NetworkManager.service
-  systemctl start cockpit.socket
-  systemctl start libvirtd.service
-  systemctl start podman.socket
+    # Enable and start services
+    echo 'Enabling and starting services...'
+    systemctl enable NetworkManager.service
+    systemctl enable cockpit.socket
+    systemctl enable libvirtd.service
+    systemctl enable podman.socket
+    systemctl enable firewalld.service # Ensure firewall service is enabled
+    systemctl start NetworkManager.service
+    systemctl start cockpit.socket
+    systemctl start libvirtd.service
+    systemctl start podman.socket
+    systemctl start firewalld.service # Ensure firewall service is started
 
-  # Install GRUB for MBR
-  echo 'Installing GRUB for MBR...'
-  grub2-install --boot-directory=/boot /dev/sda # Ensure this matches your target disk
-  grub2-mkconfig -o /boot/grub/grub.cfg # MBR uses /boot/grub
+    # Install GRUB for MBR
+    echo 'Installing GRUB for MBR...'
+    grub2-install --boot-directory=/boot /dev/sda # Ensure this matches your target disk
+    grub2-mkconfig -o /boot/grub/grub.cfg # MBR uses /boot/grub
 
-  echo 'Installation inside chroot complete.'
+    echo 'Installation inside chroot complete.'
 "
 
 echo "Unmounting virtual filesystems and target partitions..."
