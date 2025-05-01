@@ -21,6 +21,8 @@ echo "Preparing target disk: ${TARGET_DISK}"
 
 # Partitioning (WARNING: THIS WILL ERASE DATA ON ${TARGET_DISK})
 echo "Partitioning ${TARGET_DISK} (MBR layout)..."
+sudo wipefs -a ${TARGET_DISK}
+
 sudo parted -s ${TARGET_DISK} mklabel msdos # Create MBR label
 
 # Create partitions using parted
