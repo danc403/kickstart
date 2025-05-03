@@ -25,10 +25,10 @@ ROOT_PASSWORD="$1" # Use the same password for root
 
 # Network Configuration (Static IP)
 # !! IMPORTANT: Adjust these network settings for your environment !!
-STATIC_IP="192.168.1.69"
+STATIC_IP="192.168.1.68"
 GATEWAY="192.168.1.254"
 DNS="8.8.8.8,8.8.4.4" # You can add more DNS servers separated by commas, e.g., "8.8.8.8,1.1.1.1"
-HOSTNAME="idragonfly.net"
+HOSTNAME="nymph.idragonfly.net"
 
 # Mount point for the target system
 TARGET_MOUNT_POINT="/mnt/target"
