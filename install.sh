@@ -5,7 +5,7 @@ set -e
 
 # --- Configuration ---
 # !! IMPORTANT: Verify TARGET_DISK is correct for your server !!
-TARGET_DISK="/dev/sda"
+TARGET_DISK="/dev/sdc"
 
 # Partition Sizes (MB)
 BOOT_SIZE_MB=1024
