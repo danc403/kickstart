@@ -155,8 +155,6 @@ if [ "${DISK_BYTES}" -lt "${MIN_BYTES}" ] || [ "${DISK_BYTES}" -gt "${MAX_BYTES}
     DISK_GIB=$(awk -v bytes="${DISK_BYTES}" 'BEGIN {printf "%.2f", bytes / (1024**3)}')
     MIN_GIB=$(awk -v bytes="${MIN_BYTES}" 'BEGIN {printf "%.0f", bytes / (1024**3)}')
     MAX_GIB=$(awk -v bytes="${MAX_BYTES}" 'BEGIN {printf "%.0f", bytes / (1024**3)}')
-    #echo "Error: Selected disk size (${DISK_GIB} GiB) is outside the expected range (${MIN_GIB}GiB-${MAX_GIB}GiB). Aborting."
-    # Optional: Allow override? For now, we abort.
     read -p "Disk size (${DISK_GIB} GiB) is outside expected range (${MIN_GIB}GiB-${MAX_GIB}GiB). Continue anyway? (y/N): " OVERRIDE
     if [[ ! "$OVERRIDE" =~ ^[Yy]$ ]]; then exit 1; fi
 fi
@@ -359,14 +357,6 @@ sudo chroot "${TARGET_MOUNT_POINT}" /bin/bash -c '
 
     echo "--- Inside Chroot ---"
 
-    # Optional: Mount API filesystems if needed by specific tools inside chroot.
-    # The bind mounts from the host might suffice, but mounting explicitly inside
-    # ensures the standard paths are populated from the chroot perspective.
-    # mountpoint -q /proc || mount -t proc proc /proc
-    # mountpoint -q /sys || mount -t sysfs sys /sys
-    # mountpoint -q /dev || mount -t devtmpfs dev /dev # Needed if /dev wasn''t bind mounted properly
-    # mountpoint -q /run || mount -t tmpfs tmpfs /run # If /run wasn''t mounted before chroot
-
     # Source os-release to confirm environment (optional check)
     if [ -f /etc/os-release ]; then
         source /etc/os-release
@@ -374,25 +364,20 @@ sudo chroot "${TARGET_MOUNT_POINT}" /bin/bash -c '
     fi
 
     # Ensure DNS resolution works inside the chroot *before* installing packages.
-    # The copied resolv.conf should handle this initially.
     echo "Testing DNS inside chroot..."
     if ! ping -c 1 pool.ntp.org &> /dev/null; then # Be less verbose on success
         echo "Warning: DNS resolution might not be working inside chroot."
         echo "Verify /etc/resolv.conf or network setup."
-        # Consider pausing or exiting if DNS is critical for the next steps
     fi
 
-    # Verify/Enable standard Rocky Linux repositories (should be okay via rocky-repos)
-    # echo "Ensuring base repositories are enabled..."
-    # dnf config-manager --set-enabled baseos appstream # Usually default
+    # Install EPEL repository and dnf-utils (which provides config-manager)
+    echo "Installing EPEL repository and dnf-utils..."
+    dnf -y install epel-release dnf-utils
 
     # Enable CRB (CodeReady Builder) repository
     echo "Enabling CRB repository..."
     dnf config-manager --set-enabled crb
 
-    # Install and enable EPEL (Extra Packages for Enterprise Linux) repository
-    echo "Installing EPEL repository..."
-    dnf -y install epel-release
     # Refresh metadata cache after adding/enabling repositories
     echo "Refreshing DNF metadata..."
     dnf makecache
@@ -408,10 +393,10 @@ sudo chroot "${TARGET_MOUNT_POINT}" /bin/bash -c '
     dnf -y install \
         @core \
         kernel \
+        glibc-langpack-en \
         grub2 \
         grub2-tools \
         os-prober \
-        dnf-utils \
         NetworkManager \
         NetworkManager-tui \
         nm-connection-editor \
