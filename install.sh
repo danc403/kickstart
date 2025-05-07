@@ -4,24 +4,15 @@
 set -e
 
 # --- Configuration ---
-# !! IMPORTANT: Verify TARGET_DISK is correct for your server !!
-TARGET_DISK="/dev/sdc"
 
-# Partition Sizes (MB)
+# Partition Sizes (MB) - These remain configurable
 BOOT_SIZE_MB=1024
 SWAP_SIZE_MB=8192
 VAR_SIZE_MB=40960 # 40 GiB
 
 # User Configuration
 USERNAME="DAN"
-# Check if password argument is provided
-if [ -z "$1" ]; then
-  echo "Usage: $0 <password>"
-  echo "Error: Password argument missing."
-  exit 1
-fi
-USER_PASSWORD="$1" # Password is taken from the first command-line argument
-ROOT_PASSWORD="$1" # Use the same password for root
+# Password will be prompted for below
 
 # Network Configuration (Static IP)
 # !! IMPORTANT: Adjust these network settings for your environment !!
@@ -37,13 +28,108 @@ TARGET_MOUNT_POINT="/mnt/target"
 
 echo "Starting Rocky Linux 9 Installation Script"
 echo "======================================="
-echo "Target Disk:       ${TARGET_DISK}"
-echo "Username:          ${USERNAME}"
-echo "Static IP:         ${STATIC_IP}/${NETMASK}"
-echo "Gateway:           ${GATEWAY}"
-echo "DNS Servers:       ${DNS}"
-echo "Hostname:          ${HOSTNAME}"
-echo "Partition Scheme:  MBR (Legacy BIOS)"
+
+# --- Password Prompt ---
+echo "Please set the password for user '${USERNAME}' and the root account."
+while true; do
+    read -sp "Enter desired password: " CHOSEN_PASSWORD
+    echo # Add a newline after the prompt
+    read -sp "Confirm password: " CHOSEN_PASSWORD_CONFIRM
+    echo # Add a newline after the prompt
+    if [ "$CHOSEN_PASSWORD" == "$CHOSEN_PASSWORD_CONFIRM" ]; then
+        if [ -z "$CHOSEN_PASSWORD" ]; then
+            echo "Password cannot be empty. Please try again."
+        else
+            echo "Password confirmed."
+            break # Exit loop if passwords match and are not empty
+        fi
+    else
+        echo "Passwords do not match. Please try again."
+    fi
+done
+USER_PASSWORD="${CHOSEN_PASSWORD}"
+ROOT_PASSWORD="${CHOSEN_PASSWORD}"
+# Clear intermediate variable for security (optional)
+unset CHOSEN_PASSWORD CHOSEN_PASSWORD_CONFIRM
+# --- End Password Prompt ---
+
+
+# --- Disk Selection ---
+echo "Detecting available disks..."
+# Use lsblk to find block devices (-d), no header (-n), output specific columns
+# Filter out loop devices, ROMs (like cd/dvd), and partitions (which have '/' in NAME like sda1)
+mapfile -t DISK_LINES < <(lsblk -dno NAME,SIZE,VENDOR,MODEL | grep -vE '^loop|^sr[0-9]+|/')
+
+# Check if any disks were found
+if [ ${#DISK_LINES[@]} -eq 0 ]; then
+    echo "Error: No suitable disks found. Please check your hardware."
+    lsblk -d # Show devices for debugging
+    exit 1
+fi
+
+declare -a DISKS_ARRAY=()
+declare -a DISK_PATHS=()
+echo "Available disks for installation:"
+INDEX=0
+while IFS= read -r line; do
+    # Extract details using awk (handles variable spacing better)
+    DEV_NAME=$(echo "$line" | awk '{print $1}')
+    DEV_SIZE=$(echo "$line" | awk '{print $2}')
+    DEV_VENDOR=$(echo "$line" | awk '{print $3}')
+    DEV_MODEL=$(echo "$line" | awk '{print $4}') # Model might be empty
+
+    DISK_DESC="${DEV_NAME} (${DEV_SIZE})"
+    BRAND_INFO=""
+    if [ -n "${DEV_VENDOR}" ]; then
+        BRAND_INFO+="${DEV_VENDOR}"
+    fi
+    if [ -n "${DEV_MODEL}" ]; then
+        # Add a space only if vendor was also present
+        [ -n "${BRAND_INFO}" ] && BRAND_INFO+=" "
+        BRAND_INFO+="${DEV_MODEL}"
+    fi
+    if [ -n "${BRAND_INFO}" ]; then
+        DISK_DESC+=" [${BRAND_INFO}]"
+    fi
+
+    # Store full path and description
+    DISK_PATHS+=("/dev/${DEV_NAME}")
+    DISKS_ARRAY+=("${DISK_DESC}")
+
+    # Print numbered option for the user
+    echo "  $((INDEX + 1)). ${DISK_DESC}"
+    INDEX=$((INDEX + 1))
+done <<< "$(printf "%s\n" "${DISK_LINES[@]}")" # Process the mapfile content
+
+# Prompt user for selection
+while true; do
+    read -p "Select the number of the disk to install to: " DISK_CHOICE
+    # Validate if input is a number and within range
+    if [[ "${DISK_CHOICE}" =~ ^[0-9]+$ ]] && \
+       [ "${DISK_CHOICE}" -ge 1 ] && \
+       [ "${DISK_CHOICE}" -le "${#DISKS_ARRAY[@]}" ]; then
+        SELECTED_INDEX=$((DISK_CHOICE - 1))
+        TARGET_DISK="${DISK_PATHS[SELECTED_INDEX]}"
+        echo "You have selected: ${DISKS_ARRAY[SELECTED_INDEX]}"
+        echo "Installation target set to: ${TARGET_DISK}"
+        break # Valid choice, exit loop
+    else
+        echo "Invalid selection. Please enter a number between 1 and ${#DISKS_ARRAY[@]}."
+    fi
+done
+# --- End Disk Selection ---
+
+# Display final configuration before warning
+echo ""
+echo "--- Final Configuration ---"
+echo "Target Disk:        ${TARGET_DISK} (${DISKS_ARRAY[SELECTED_INDEX]})"
+echo "Username:           ${USERNAME}"
+echo "Static IP:          ${STATIC_IP}/${NETMASK}"
+echo "Gateway:            ${GATEWAY}"
+echo "DNS Servers:        ${DNS}"
+echo "Hostname:           ${HOSTNAME}"
+echo "Partition Scheme:   MBR (Legacy BIOS)"
+echo "---------------------------"
 echo ""
 echo "WARNING: ALL DATA ON ${TARGET_DISK} WILL BE ERASED!"
 read -p "Press Enter to continue, or Ctrl+C to abort..."
@@ -52,8 +138,8 @@ read -p "Press Enter to continue, or Ctrl+C to abort..."
 
 echo "Preparing target disk: ${TARGET_DISK}"
 
-# Verify the disk size
-echo "Verifying disk size..."
+# Verify the disk size (using the selected TARGET_DISK)
+echo "Verifying selected disk size..."
 DISK_BYTES=$(sudo lsblk -b -n -d -o SIZE "${TARGET_DISK}" || echo "") # Handle potential lsblk error
 
 if [ -z "${DISK_BYTES}" ]; then
@@ -61,6 +147,7 @@ if [ -z "${DISK_BYTES}" ]; then
     exit 1
 fi
 
+# Keep size checks as they were, or adjust if needed
 MIN_BYTES=$((60 * 1024**3)) # 60 GiB Minimum
 MAX_BYTES=$((2000 * 1024**3)) # 2 TB Maximum
 
@@ -68,21 +155,23 @@ if [ "${DISK_BYTES}" -lt "${MIN_BYTES}" ] || [ "${DISK_BYTES}" -gt "${MAX_BYTES}
     DISK_GIB=$(awk -v bytes="${DISK_BYTES}" 'BEGIN {printf "%.2f", bytes / (1024**3)}')
     MIN_GIB=$(awk -v bytes="${MIN_BYTES}" 'BEGIN {printf "%.0f", bytes / (1024**3)}')
     MAX_GIB=$(awk -v bytes="${MAX_BYTES}" 'BEGIN {printf "%.0f", bytes / (1024**3)}')
-    echo "Error: Disk size (${DISK_GIB} GiB) is outside the expected range (${MIN_GIB}GiB-${MAX_GIB}GiB). Aborting."
-    exit 1
+    #echo "Error: Selected disk size (${DISK_GIB} GiB) is outside the expected range (${MIN_GIB}GiB-${MAX_GIB}GiB). Aborting."
+    # Optional: Allow override? For now, we abort.
+    read -p "Disk size (${DISK_GIB} GiB) is outside expected range (${MIN_GIB}GiB-${MAX_GIB}GiB). Continue anyway? (y/N): " OVERRIDE
+    if [[ ! "$OVERRIDE" =~ ^[Yy]$ ]]; then exit 1; fi
 fi
-echo "Disk size verification passed."
+echo "Selected disk size verification passed."
 
 # Wipe existing signatures
 echo "Wiping existing filesystem signatures from ${TARGET_DISK}..."
 sudo wipefs -a "${TARGET_DISK}"
 
-# Partitioning for MBR (Legacy BIOS)
+# Partitioning for MBR (Legacy BIOS) - Using the selected TARGET_DISK
 echo "Partitioning ${TARGET_DISK} with MBR layout..."
 sudo parted -s "${TARGET_DISK}" mklabel msdos
 
-# Create partitions
-echo "Creating partitions..."
+# Create partitions - Using the selected TARGET_DISK
+echo "Creating partitions on ${TARGET_DISK}..."
 BOOT_END_MB=$((BOOT_SIZE_MB))
 SWAP_END_MB=$((BOOT_END_MB + SWAP_SIZE_MB))
 VAR_END_MB=$((SWAP_END_MB + VAR_SIZE_MB))
@@ -97,16 +186,43 @@ sudo parted -s "${TARGET_DISK}" mkpart primary ext4 ${SWAP_END_MB}MiB ${VAR_END_
 # / (root) partition (primary, ext4, remaining space)
 sudo parted -s "${TARGET_DISK}" mkpart primary ext4 ${VAR_END_MB}MiB 100%
 
-# Ensure kernel recognizes new partitions
-echo "Waiting for kernel to recognize new partitions..."
+# Ensure kernel recognizes new partitions on the selected TARGET_DISK
+echo "Waiting for kernel to recognize new partitions on ${TARGET_DISK}..."
 sudo partprobe "${TARGET_DISK}"
 sleep 2 # Brief pause for safety
 
-# Define partition device names (should be predictable for /dev/sdX)
-BOOT_PARTITION="${TARGET_DISK}1"
-SWAP_PARTITION="${TARGET_DISK}2"
-VAR_PARTITION="${TARGET_DISK}3"
-ROOT_PARTITION="${TARGET_DISK}4"
+# Define partition device names based on the selected TARGET_DISK
+# !! IMPORTANT: Assumes predictable naming (e.g., /dev/sda -> /dev/sda1, /dev/nvme0n1 -> /dev/nvme0n1p1)
+# Adjust if using non-standard disk types where numbering might differ
+# For common SATA/SCSI/IDE (/dev/sdX)
+if [[ "${TARGET_DISK}" == /dev/sd* ]]; then
+    BOOT_PARTITION="${TARGET_DISK}1"
+    SWAP_PARTITION="${TARGET_DISK}2"
+    VAR_PARTITION="${TARGET_DISK}3"
+    ROOT_PARTITION="${TARGET_DISK}4"
+# For NVMe (/dev/nvmeXnY)
+elif [[ "${TARGET_DISK}" == /dev/nvme* ]]; then
+    BOOT_PARTITION="${TARGET_DISK}p1"
+    SWAP_PARTITION="${TARGET_DISK}p2"
+    VAR_PARTITION="${TARGET_DISK}p3"
+    ROOT_PARTITION="${TARGET_DISK}p4"
+# Add other device types if needed (e.g., /dev/vdX for virtio)
+elif [[ "${TARGET_DISK}" == /dev/vd* ]]; then
+    BOOT_PARTITION="${TARGET_DISK}1"
+    SWAP_PARTITION="${TARGET_DISK}2"
+    VAR_PARTITION="${TARGET_DISK}3"
+    ROOT_PARTITION="${TARGET_DISK}4"
+else
+    echo "Error: Unrecognized disk type '${TARGET_DISK}'. Cannot reliably determine partition names."
+    echo "Script needs adjustment for this disk type."
+    exit 1
+fi
+echo "Partitions identified as:"
+echo "  Boot: ${BOOT_PARTITION}"
+echo "  Swap: ${SWAP_PARTITION}"
+echo "  Var:  ${VAR_PARTITION}"
+echo "  Root: ${ROOT_PARTITION}"
+
 
 echo "Formatting partitions..."
 sudo mkfs.ext4 -F -L boot "${BOOT_PARTITION}"
@@ -169,6 +285,7 @@ if [ -z "${LIVE_INTERFACE}" ]; then
     if [ -z "${INTERFACE_NAME}" ]; then
         echo "No interface provided. Aborting."
         # Consider unmounting filesystems here before exiting cleanly
+        # (Add cleanup logic here if desired before aborting)
         exit 1
     fi
 else
@@ -194,6 +311,14 @@ else
     echo "Consider configuring DNS manually if the next step fails."
 fi
 
+# ---- START TMPDIR MODIFICATION ----
+echo "Creating temporary directory for host DNF operations on target disk..."
+HOST_DNF_TMP="${TARGET_MOUNT_POINT}/host_dnf_temp"
+sudo mkdir -p "${HOST_DNF_TMP}"
+export TMPDIR="${HOST_DNF_TMP}"
+echo "TMPDIR for host DNF set to: ${TMPDIR}"
+# ---- END TMPDIR MODIFICATION ----
+
 echo "Installing base system packages into ${TARGET_MOUNT_POINT}..."
 # Install the bare minimum needed to chroot and run dnf inside
 # Requires the live environment (DVD) to have access to Rocky 9 repositories
@@ -210,6 +335,13 @@ sudo dnf --installroot="${TARGET_MOUNT_POINT}" -y install \
     --releasever=9
     # Add --nogpgcheck if GPG key import fails in the live environment
 
+# ---- START TMPDIR CLEANUP ----
+echo "Cleaning up temporary DNF directory used by host..."
+unset TMPDIR
+sudo rm -rf "${HOST_DNF_TMP}"
+echo "Host DNF temporary directory removed."
+# ---- END TMPDIR CLEANUP ----
+
 echo "Base packages installed."
 
 # === Chroot and System Installation/Configuration ===
@@ -217,6 +349,7 @@ echo "Base packages installed."
 echo "Chrooting into ${TARGET_MOUNT_POINT} and completing installation..."
 
 # Export variables needed inside chroot environment
+# Ensure TARGET_DISK (the selected disk) is exported for GRUB installation
 export USERNAME USER_PASSWORD ROOT_PASSWORD STATIC_IP NETMASK GATEWAY DNS HOSTNAME INTERFACE_NAME TARGET_DISK
 
 # Execute the main installation and configuration steps inside the chroot
@@ -231,7 +364,7 @@ sudo chroot "${TARGET_MOUNT_POINT}" /bin/bash -c '
     # ensures the standard paths are populated from the chroot perspective.
     # mountpoint -q /proc || mount -t proc proc /proc
     # mountpoint -q /sys || mount -t sysfs sys /sys
-    # mountpoint -q /dev || mount -t devtmpfs dev /dev # Needed if /dev wasn't bind mounted properly
+    # mountpoint -q /dev || mount -t devtmpfs dev /dev # Needed if /dev wasn''t bind mounted properly
     # mountpoint -q /run || mount -t tmpfs tmpfs /run # If /run wasn''t mounted before chroot
 
     # Source os-release to confirm environment (optional check)
@@ -243,7 +376,7 @@ sudo chroot "${TARGET_MOUNT_POINT}" /bin/bash -c '
     # Ensure DNS resolution works inside the chroot *before* installing packages.
     # The copied resolv.conf should handle this initially.
     echo "Testing DNS inside chroot..."
-    if ! ping -c 1 pool.ntp.org; then
+    if ! ping -c 1 pool.ntp.org &> /dev/null; then # Be less verbose on success
         echo "Warning: DNS resolution might not be working inside chroot."
         echo "Verify /etc/resolv.conf or network setup."
         # Consider pausing or exiting if DNS is critical for the next steps
@@ -336,7 +469,7 @@ gateway=${GATEWAY} # Default gateway
 dns=${DNS} # Comma-separated DNS server(s)
 
 [ipv6]
-method=disabled # Disable IPv6 if not used, common for internal servers
+method=auto # Disable IPv6 if not used, common for internal servers
 # Use method=auto for SLAAC/DHCPv6, or method=manual for static IPv6
 
 [proxy]
@@ -355,11 +488,11 @@ EOL
     # Creates user, group, home directory (/home/USERNAME), sets shell
     useradd -m -s /bin/bash "${USERNAME}"
 
-    # Set Password for Regular User
+    # Set Password for Regular User using the chosen password
     echo "Setting password for user: ${USERNAME}"
     echo "${USERNAME}:${USER_PASSWORD}" | chpasswd
 
-    # Set Password for Root User
+    # Set Password for Root User using the chosen password
     echo "Setting root password..."
     echo "root:${ROOT_PASSWORD}" | chpasswd
 
@@ -372,9 +505,9 @@ EOL
     systemctl enable NetworkManager.service # Manages network connections
     systemctl enable firewalld.service     # Manages the firewall
     systemctl enable chronyd.service       # Manages system time synchronization (NTP)
-    systemctl enable cockpit.socket       # Enables the Cockpit web console (socket activation)
-    systemctl enable libvirtd.service     # Enables the KVM/QEMU virtualization daemon
-    # systemctl enable podman.socket      # Optional: Enable socket for rootless Podman API access
+    systemctl enable cockpit.socket      # Enables the Cockpit web console (socket activation)
+    systemctl enable libvirtd.service      # Enables the KVM/QEMU virtualization daemon
+    systemctl enable podman.socket     # Optional: Enable socket for rootless Podman API access
 
     # Configure Firewall Rules
     echo "Configuring firewall..."
@@ -388,6 +521,7 @@ EOL
     echo "Firewall rules configured (will apply on system boot)."
 
     # Install GRUB Bootloader for MBR/Legacy BIOS Boot
+    # Uses the TARGET_DISK variable exported from the main script
     echo "Installing GRUB bootloader for MBR on ${TARGET_DISK}..."
     # This command installs the GRUB boot code to the Master Boot Record of the target disk.
     grub2-install "${TARGET_DISK}"
@@ -418,11 +552,13 @@ fi
 echo "Unmounting filesystems..."
 # Unmount in reverse order of mounting. Add warnings on failure.
 # Use lazy unmount (-l) as a fallback if busy, though clean unmount is preferred.
+# Unmounting virtual filesystems first
 sudo umount "${TARGET_MOUNT_POINT}/sys" || sudo umount -l "${TARGET_MOUNT_POINT}/sys" || echo "Warning: Failed to unmount ${TARGET_MOUNT_POINT}/sys"
 sudo umount "${TARGET_MOUNT_POINT}/proc" || sudo umount -l "${TARGET_MOUNT_POINT}/proc" || echo "Warning: Failed to unmount ${TARGET_MOUNT_POINT}/proc"
 sudo umount "${TARGET_MOUNT_POINT}/run" || sudo umount -l "${TARGET_MOUNT_POINT}/run" || echo "Warning: Failed to unmount ${TARGET_MOUNT_POINT}/run" # If mounted as tmpfs or bind
 sudo umount "${TARGET_MOUNT_POINT}/dev" || sudo umount -l "${TARGET_MOUNT_POINT}/dev" || echo "Warning: Failed to unmount ${TARGET_MOUNT_POINT}/dev"
 
+# Unmounting target partitions
 sudo umount "${TARGET_MOUNT_POINT}/var" || sudo umount -l "${TARGET_MOUNT_POINT}/var" || echo "Warning: Failed to unmount ${TARGET_MOUNT_POINT}/var"
 sudo umount "${TARGET_MOUNT_POINT}/boot" || sudo umount -l "${TARGET_MOUNT_POINT}/boot" || echo "Warning: Failed to unmount ${TARGET_MOUNT_POINT}/boot"
 sudo umount "${TARGET_MOUNT_POINT}" || sudo umount -l "${TARGET_MOUNT_POINT}" || echo "Warning: Failed to unmount ${TARGET_MOUNT_POINT}"
@@ -433,10 +569,10 @@ sudo swapoff "${SWAP_PARTITION}" || echo "Warning: Failed to swapoff ${SWAP_PART
 
 echo "=========================================================="
 echo "Installation Script Completed Successfully."
-echo "Target Disk:       ${TARGET_DISK}"
-echo "Hostname:          ${HOSTNAME}"
-echo "IP Address:        ${STATIC_IP}/${NETMASK}"
-echo "User:              ${USERNAME} (sudo access via 'wheel' group)"
+echo "Target Disk:        ${TARGET_DISK}"
+echo "Hostname:           ${HOSTNAME}"
+echo "IP Address:         ${STATIC_IP}/${NETMASK}"
+echo "User:               ${USERNAME} (sudo access via 'wheel' group)"
 echo ""
 echo "You can now attempt to reboot the server."
 echo "IMPORTANT: Ensure your server's BIOS is set to boot from ${TARGET_DISK}"
